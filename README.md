@@ -4,7 +4,7 @@ Play a junior radiation operator in a fictional Martian outpost. Learn the tower
 
 ## Open the game
 
-Open `index.html` in a modern browser. Use WASD or the arrow keys to move and E to interact. Use the on-screen movement and interaction controls on touch screens. The Phone station connects you to the instructor.
+Open `index.html` in a modern browser. Use WASD or the arrow keys to move and E to interact. Use the on-screen movement and interaction controls on touch screens. The Phone station connects you to the instructor. Tool readings, dialogue, and commands appear in the left panel. The Crew console shows all three crewmates on the radar as they travel between the antenna and shelter.
 
 ## Publish on GitHub Pages
 

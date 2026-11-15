@@ -5,6 +5,9 @@
   const world = select('#world');
   const player = select('#player');
   const dialog = select('#dialog');
+  const toolbar = select('#toolbar');
+  const display = select('.donki-display');
+  const missionActions = select('.mission-actions');
   const title = select('#dialog-title');
   const content = select('#dialog-content');
   const clock = select('#clock');
@@ -17,23 +20,46 @@
     ['w', 'up'], ['a', 'left'], ['s', 'down'], ['d', 'right'],
     ['arrowup', 'up'], ['arrowleft', 'left'], ['arrowdown', 'down'], ['arrowright', 'right'],
   ]);
-  const stations = {
-    donki: { x: 20, y: 39, name: 'DONKI desk' },
-    rad: { x: 48, y: 39, name: 'RAD monitor' },
-    crew: { x: 75, y: 39, name: 'crew console' },
-    instructor: { x: 22, y: 47, name: 'instructor' },
-    phone: { x: 83, y: 55, name: 'hint phone' },
-    lab: { x: 68, y: 85, name: 'magnet lab' },
-    desk: { x: 35.3, y: 84.5, name: 'shift desk' },
+  // The grid uses the astronaut's feet as its anchor.
+  const floor = [
+    '##############',
+    '##..........##',
+    '###.........##',
+    '###.........##',
+    '###.........##',
+    '###.........##',
+    '#.......######',
+    '#.......######',
+    '###...########',
+  ];
+  const steps = {
+    up: { x: 0, y: -1 }, down: { x: 0, y: 1 },
+    left: { x: -1, y: 0 }, right: { x: 1, y: 0 },
   };
+  const stations = {
+    donki: { x: 3, y: 1, name: 'DONKI desk' },
+    rad: { x: 6, y: 1, name: 'RAD monitor' },
+    crew: { x: 11, y: 1, name: 'crew console' },
+    instructor: { x: 3, y: 2, name: 'instructor' },
+    phone: { x: 11, y: 3, name: 'hint phone' },
+    lab: { x: 10, y: 5, name: 'magnet lab' },
+    desk: { x: 6, y: 7, name: 'shift desk' },
+  };
+  const tilePoint = ({ x, y }) => ({ x: 11 + x * 6, y: 33 + y * 6 });
+  const sameTile = (a, b) => a.x === b.x && a.y === b.y;
+  const canWalk = ({x, y}) => floor[y]?.[x] === '.';
   const lessons = ['donki', 'rad', 'crew'];
   const milestones = { notice: 14, arrival: 38, clear: 82, finish: 145 };
   const travelMinutes = 12;
   const archive = 'https://www.jpl.nasa.gov/news/nasa-watches-mars-light-up-during-epic-solar-storm/';
   const donkiInfo = 'https://ccmc.gsfc.nasa.gov/tools/DONKI/';
   const initialPrompt = prompt?.textContent;
-  const initialPosition = { x: 46.49, y: 57.35 };
-  const position = { ...initialPosition };
+  let tile = { x: 6, y: 4 };
+  let position = tilePoint(tile);
+  let movement = null;
+  let route = [];
+  let pendingDirection = null;
+  let focusBeforePanel = null;
   const previousRuns = [];
   let destination = null;
   let phase = 'welcome';
@@ -45,14 +71,6 @@
   let lastFrame;
   let elapsed = 0;
   let previousNearest;
-
-  for (const [key, station] of Object.entries(stations)) {
-    const element = select(`[data-station="${key}"]`);
-    if (element?.dataset.x && element?.dataset.y) {
-      station.x = Number(element.dataset.x);
-      station.y = Number(element.dataset.y);
-    }
-  }
 
   function shiftTime(minute) {
     const hour = String(9 + Math.floor(minute / 60)).padStart(2, '0');
@@ -66,39 +84,106 @@
 
   function openPanel(heading, body) {
     keys.clear();
+    pendingDirection = null;
     destination = null;
+    route = [];
+    if (movement) {
+      movement = null;
+      position = tilePoint(tile);
+      renderPlayer();
+    }
+    if (dialog.hidden) focusBeforePanel = document.activeElement;
     title.textContent = heading;
     content.innerHTML = body;
     content.scrollTop = 0;
-    if (!dialog.open) dialog.showModal();
+    dialog.hidden = false;
+    dialog.insertBefore(alert, content);
+    missionActions.inert = true;
+    world.inert = true;
+    toolbar.inert = true;
     title.focus({ preventScroll: true });
+    if (dialog.getBoundingClientRect().top < 0) dialog.scrollIntoView({ block: 'start' });
+    updateDisplay();
+  }
+
+  function closePanel() {
+    display.insertBefore(alert, dialog);
+    dialog.hidden = true;
+    missionActions.inert = false;
+    world.inert = false;
+    toolbar.inert = false;
+    if (focusBeforePanel && focusBeforePanel !== document.body) {
+      focusBeforePanel.focus({ preventScroll: true });
+    }
     updateDisplay();
   }
 
   function renderPlayer() {
     player.style.left = `${position.x}%`;
     player.style.top = `${position.y}%`;
-  }
-
-  function distance(station) {
-    return Math.hypot(position.x - station.x, position.y - station.y);
+    player.dataset.walking = String(Boolean(movement));
   }
 
   function nearby() {
-    let best = null;
-    let range = 9.5;
-    for (const [key, station] of Object.entries(stations)) {
-      const gap = distance(station);
-      if (gap < range) {
-        best = key;
-        range = gap;
+    if (movement) return null;
+    return Object.keys(stations).find(key => sameTile(tile, stations[key])) ?? null;
+  }
+
+  function pathTo(target, origin) {
+    const queue = [{ tile: origin, path: [] }];
+    const visited = new Set([`${origin.x},${origin.y}`]);
+    for (const node of queue) {
+      if (sameTile(node.tile, target)) return node.path;
+      for (const [direction, step] of Object.entries(steps)) {
+        const next = { x: node.tile.x + step.x, y: node.tile.y + step.y };
+        const key = `${next.x},${next.y}`;
+        if (!canWalk(next) || visited.has(key)) continue;
+        visited.add(key);
+        queue.push({ tile: next, path: [...node.path, direction] });
       }
     }
-    return best;
+    return [];
+  }
+
+  function beginStep(direction) {
+    const step = steps[direction];
+    const next = { x: tile.x + step.x, y: tile.y + step.y };
+    if (direction === 'left' || direction === 'right') player.dataset.facing = direction;
+    if (!canWalk(next)) return;
+    movement = { from: tilePoint(tile), to: tilePoint(next), tile: next, elapsed: 0 };
+  }
+
+  function walk(duration) {
+    if (movement) {
+      movement.elapsed += duration;
+      const ratio = Math.min(movement.elapsed / 0.135, 1);
+      const { from, to } = movement;
+      position = { x: from.x + (to.x - from.x) * ratio, y: from.y + (to.y - from.y) * ratio };
+      if (ratio < 1) return;
+      tile = movement.tile;
+      movement = null;
+    }
+    const direction = pendingDirection ?? [...keys].at(-1);
+    pendingDirection = null;
+    if (direction) {
+      destination = null;
+      route = [];
+      beginStep(direction);
+    } else if (route.length) {
+      beginStep(route.shift());
+    } else if (destination) {
+      const station = destination;
+      destination = null;
+      if (sameTile(tile, stations[station])) interact(station);
+    }
   }
 
   function updateDisplay() {
     const near = nearby();
+    if (near !== previousNearest) {
+      if (previousNearest) select(`[data-station="${previousNearest}"]`).dataset.near = 'false';
+      if (near) select(`[data-station="${near}"]`).dataset.near = 'true';
+    }
     if (prompt && (near !== previousNearest || (phase !== 'welcome' && !near))) {
       const verb = near === 'instructor' ? 'TALK' : 'INTERACT';
       const promptText = near ? `PRESS E TO ${verb}` :
@@ -112,7 +197,7 @@
       if (clock.textContent !== time) clock.textContent = time;
     }
     if (status && phase !== 'welcome') {
-      const statusText = phase === 'solo' ? (dialog.open ? 'PAUSED' : 'SOLO SHIFT') :
+      const statusText = phase === 'solo' ? (!dialog.hidden ? 'PAUSED' : 'SOLO SHIFT') :
         phase === 'complete' ? 'SHIFT COMPLETE' : 'TRAINING';
       if (status.textContent !== statusText) status.textContent = statusText;
     }
@@ -208,7 +293,7 @@
       <p><strong>What does this report tell you?</strong></p>`,
       `<p class="eyebrow">Practice readings</p><div class="data-grid"><p>Usual reading <strong>2</strong></p><p>Current reading <strong>12</strong></p></div>
       <p>RAD measures radiation where it is. More radiation recorded each minute means dose can build up faster.</p><p><strong>What changed?</strong></p>`,
-      `<p class="eyebrow">Practice crew</p><p>The team is outside at the antenna. RAD shows high radiation. The habitat shelter is a short walk away.</p><p><strong>What command takes the team to shelter?</strong></p>`,
+      `<p class="eyebrow">Practice crew</p>${crewRadar(100, 'Antenna site')}<p>The team is outside at the antenna. RAD shows high radiation. The habitat shelter is a short walk away.</p><p><strong>What command takes the team to shelter?</strong></p>`,
     ];
     const good = ['Check RAD for a local reading', 'Radiation is higher right now', 'Return to shelter'];
     const other = ['The report gives the crew’s dose', 'Radiation stayed the same', 'Continue inspection'];
@@ -240,7 +325,7 @@
     shift = { minute: 0, dose: 0, inspection: 8, location: 'antenna', travel: 0, waiting: false, timeline: [] };
     log('Solo shift began. The crew was inspecting the antenna.');
     showAlert('quiet', 'MONITORING · No space-weather alert');
-    dialog.close();
+    closePanel();
     updateDisplay();
   }
 
@@ -305,6 +390,34 @@
       <details><summary>What’s a dose?</summary><p>Rate tells us how quickly radiation adds up. Dose tells us how much energy from radiation has been left in something over time. A microgray (µGy) is a tiny unit of absorbed dose.</p></details>`);
   }
 
+  function crewRadar(progress, label) {
+    const x = 56 + progress * 1.78;
+    const y = 120 - progress * 0.68;
+    const marks = [[-12, 12], [0, -10], [12, 12]];
+    return `<figure class="crew-radar">
+      <figcaption><strong>Crew radar</strong><span>Simulated positions</span></figcaption>
+      <svg viewBox="0 0 296 163" role="img" aria-label="Three crewmates at ${label}">
+        <defs><pattern id="radar-grid" width="16" height="16" patternUnits="userSpaceOnUse">
+          <path d="M 16 0 H 0 V 16" fill="none" stroke="#28574e" stroke-width="1"/>
+        </pattern></defs>
+        <rect width="296" height="163" fill="url(#radar-grid)"/>
+        <g class="radar-rings" fill="none" stroke="#356b5b">
+          <circle cx="148" cy="81" r="23"/><circle cx="148" cy="81" r="44"/><circle cx="148" cy="81" r="66"/>
+          <path d="M148 0v163M0 81h296"/>
+        </g>
+        <path d="M56 120L234 52" fill="none" stroke="#8bc6a0" stroke-width="2" stroke-dasharray="5 4"/>
+        <g fill="#d7eee0" font-size="11" font-weight="700">
+          <text x="12" y="151">SHELTER</text><text x="218" y="24">ANTENNA</text>
+        </g>
+        <g class="radar-team">${marks.map(([dx, dy], index) =>
+          `<g transform="translate(${x + dx} ${y + dy})">
+            <circle class="radar-ping" r="10"/><circle class="radar-dot" r="8"/>
+            <text class="radar-number" y="3.5" text-anchor="middle">${index + 1}</text></g>`).join('')}</g>
+      </svg>
+      <p>1–3 · Antenna team <span>${label}</span></p>
+    </figure>`;
+  }
+
   function crewConsole(message = '') {
     const { location, inspection, dose, travel, waiting } = shift;
     const locations = {
@@ -323,9 +436,7 @@
         actions(button('shelter', 'Return to shelter', true))) :
       location === 'shelter' && progress < 100 ?
         actions(button('resume', 'Resume inspection', !radiation()), button('wait', 'Resume later', radiation())) : '';
-    openPanel('CREW · Antenna team', `<div class="crew-map" aria-label="Route from the habitat shelter to the antenna site">
-      <span>Habitat shelter</span><span>Antenna site</span>
-      <div class="crew-route"><b style="left:${path}%" aria-hidden="true"></b></div></div>
+    openPanel('CREW · Antenna team', `${crewRadar(path, locations[location])}
       <div class="data-grid"><p>Location <strong>${locations[location]}</strong></p>
       <p>Status <strong>${crewStatus}</strong></p><p>Training dose <strong>${Math.round(dose)} µGy</strong></p>
       <p>Inspection <strong>${progress}%</strong></p></div>
@@ -454,30 +565,10 @@
   function frame(now) {
     const duration = Math.min((now - (lastFrame ?? now)) / 1000, 0.06);
     lastFrame = now;
-    if (!dialog.open) {
-      const dx = Number(keys.has('right')) - Number(keys.has('left'));
-      const dy = Number(keys.has('down')) - Number(keys.has('up'));
-      if (dx || dy) {
-        destination = null;
-        const diagonal = Math.hypot(dx, dy);
-        position.x += (dx / diagonal) * duration * 28;
-        position.y += (dy / diagonal) * duration * 26;
-      } else if (destination) {
-        const target = stations[destination];
-        const gap = distance(target);
-        if (gap < 1.5) {
-          const station = destination;
-          destination = null;
-          interact(station);
-        } else {
-          position.x += ((target.x - position.x) / gap) * duration * 34;
-          position.y += ((target.y - position.y) / gap) * duration * 32;
-        }
-      }
-      position.x = Math.max(8, Math.min(92, position.x));
-      position.y = Math.max(34, Math.min(93, position.y));
+    if (dialog.hidden) {
+      walk(duration);
       renderPlayer();
-      if (phase === 'solo' && !dialog.open) {
+      if (phase === 'solo' && dialog.hidden) {
         elapsed += duration;
         if (elapsed >= 0.85) {
           elapsed -= 0.85;
@@ -490,10 +581,18 @@
   }
 
   document.addEventListener('keydown', (event) => {
-    if (dialog.open || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (!dialog.hidden) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closePanel();
+      }
+      return;
+    }
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
     const key = event.key.toLowerCase();
     if (moves.has(key)) {
       event.preventDefault();
+      if (!event.repeat) pendingDirection = moves.get(key);
       keys.add(moves.get(key));
     } else if (key === 'e' && !event.repeat) {
       prepareAudio();
@@ -502,12 +601,11 @@
   });
   document.addEventListener('keyup', (event) => keys.delete(moves.get(event.key.toLowerCase())));
   window.addEventListener('blur', () => keys.clear());
-  dialog.addEventListener('close', updateDisplay);
-  select('#dialog-close')?.addEventListener('click', () => dialog.close());
+  select('#dialog-close')?.addEventListener('click', () => closePanel());
   dialog.addEventListener('click', (event) => {
     const choice = event.target.closest('[data-choice]')?.dataset.choice;
     if (!choice) return;
-    if (choice === 'leave') dialog.close();
+    if (choice === 'leave') closePanel();
     else if (choice === 'training') startTraining();
     else if (choice === 'launch') startShift();
     else if (choice === 'hint') help(true);
@@ -522,14 +620,17 @@
   });
 
   document.addEventListener('click', (event) => {
-    if (dialog.open) return;
+    if (!dialog.hidden) return;
     const target = event.target.closest('[data-station], [data-action]');
     if (!target) return;
     prepareAudio();
     const { station, action } = target.dataset;
     if (station && stations[station] && world.contains(target)) {
-      if (distance(stations[station]) <= 9.5) interact(station);
-      else destination = station;
+      if (!movement && sameTile(tile, stations[station])) interact(station);
+      else {
+        destination = station;
+        route = pathTo(stations[station], movement?.tile ?? tile);
+      }
     } else if (action === 'interact') {
       const near = nearby();
       if (near) interact(near);
@@ -545,6 +646,7 @@
     control.addEventListener('pointerdown', (event) => {
       event.preventDefault();
       control.setPointerCapture(event.pointerId);
+      pendingDirection = direction;
       keys.add(direction);
     });
     for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
@@ -552,8 +654,7 @@
     }
     control.addEventListener('click', (event) => {
       if (event.detail === 0) {
-        keys.add(direction);
-        setTimeout(() => keys.delete(direction), 100);
+        pendingDirection = direction;
       }
     });
   }
