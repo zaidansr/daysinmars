@@ -3,70 +3,132 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#15151f">
+  <meta name="theme-color" content="#162129">
   <title>Mars Radiation Tower</title>
   <link rel="stylesheet" href="styles.css">
   <script src="game.js" defer></script>
 </head>
 <body>
-  <main class="game" aria-labelledby="game-title">
-    <h1 id="game-title" class="sr-only">Mars Radiation Tower</h1>
-    <p id="controls-help" class="sr-only">Move with the arrow keys or WASD. Press E to use a nearby station, or use the on-screen controls. Press Escape to close an open panel.</p>
-    <div class="scene">
-      <aside class="donki-display" aria-label="DONKI solar particle alert">
-        <img src="assets/donki-panel.png" alt="DONKI. Solar particle alert. Training simulation." width="645" height="992" draggable="false">
-        <img class="solar-monitor" src="assets/solar-monitor-pixel.png" alt="" width="160" height="90" draggable="false">
-        <div id="alert" class="solar-alert" role="status" hidden></div>
-        <section id="dialog" class="tool-panel" aria-labelledby="dialog-title" hidden>
-          <header class="dialog-header">
-            <h2 id="dialog-title"></h2>
-            <button type="button" id="dialog-close" aria-label="Back to tower">×</button>
-          </header>
-          <div id="dialog-content" class="dialog-content"></div>
-        </section>
-        <div class="left-controls">
-          <div class="mission-actions">
-            <button type="button" class="primary" data-action="start">Start training</button>
-            <button type="button" data-action="help">Help</button>
-          </div>
-          <div class="mission-status">
-            <span id="clock"></span>
-            <span id="status" role="status" aria-live="polite" aria-atomic="true"></span>
-          </div>
+  <main class="console-shell" aria-labelledby="game-title">
+    <section class="console" aria-label="Operator console">
+      <header class="console-header">
+        <div class="masthead">
+          <span class="mars-emblem" aria-hidden="true"></span>
+          <h1 id="game-title">Mars Radiation Tower</h1>
         </div>
-      </aside>
-      <section id="world" class="tower" aria-label="Radiation tower control room" aria-describedby="controls-help" tabindex="0">
-        <img class="tower-art" src="assets/tower.png" alt="" width="941" height="992" draggable="false">
-        <button type="button" class="station station-donki" data-station="donki" aria-label="DONKI solar activity console" title="DONKI"></button>
-        <button type="button" class="station station-rad" data-station="rad" aria-label="RAD radiation console" title="RAD"></button>
-        <button type="button" class="station station-crew" data-station="crew" aria-label="CREW status console" title="CREW"></button>
-        <button type="button" class="station station-phone" data-station="phone" aria-label="PHONE emergency communications" title="PHONE"></button>
-        <button type="button" class="station station-instructor" data-station="instructor" aria-label="Instructor" title="Instructor"></button>
-        <button type="button" class="station station-lab" data-station="lab" aria-label="MAGNET trainer" title="MAGNET"></button>
-        <button type="button" class="station station-desk" data-station="desk" aria-label="Shift desk" title="Shift desk"></button>
-        <div id="player" class="player" aria-hidden="true">
-          <div class="player-sprite">
-            <img class="player-body" src="assets/astronaut.png" alt="" width="73" height="97" draggable="false">
-            <img class="player-leg left-leg" src="assets/astronaut.png" alt="" draggable="false">
-            <img class="player-leg right-leg" src="assets/astronaut.png" alt="" draggable="false">
-          </div>
+        <div class="shift-meta">
+          <span>Training shift</span>
+          <span class="shift-clock" aria-label="Training time"><span id="clock">00:00</span></span>
         </div>
-        <button type="button" id="prompt" class="prompt" data-action="interact" aria-label="Interact with nearby station"></button>
+      </header>
+
+      <section class="flight-data" aria-label="Radiation and crew telemetry">
+        <div class="alert-strip">
+          <span class="alert-symbol" aria-hidden="true">!</span>
+          <p id="alert" data-level="warning">Fast particles could arrive in 4–8 min.</p>
+        </div>
+        <dl class="telemetry">
+          <div class="reading">
+            <dt>Outside radiation</dt>
+            <dd id="radiation">Normal</dd>
+          </div>
+          <div class="reading">
+            <dt>Walk to shelter</dt>
+            <dd id="walk">6 min</dd>
+          </div>
+        </dl>
+        <figure class="radar">
+          <figcaption><span>Crew radar</span><span id="crew-status">At antenna</span></figcaption>
+          <svg class="radar-map" viewBox="0 0 448 90" role="img" aria-labelledby="radar-location">
+            <defs>
+              <pattern id="radar-grid" width="16" height="16" patternUnits="userSpaceOnUse">
+                <path d="M16 0H0V16" fill="none" stroke="#264549" stroke-width="1"/>
+              </pattern>
+            </defs>
+            <rect width="448" height="90" fill="url(#radar-grid)"/>
+            <path d="M80 53H365" class="radar-route"/>
+            <g aria-hidden="true">
+              <path class="radar-base" d="M67 45l13-9 13 9v16H67z"/>
+              <path class="radar-symbol" d="M76 61V50h8v11"/>
+              <path class="radar-base" d="M352 42h26v20h-26z"/>
+              <path class="radar-symbol" d="M365 57V42m-6 4 6 5 6-5m-12 13h12"/>
+              <text class="radar-label" x="80" y="23" text-anchor="middle">Shelter</text>
+              <text class="radar-label" x="365" y="23" text-anchor="middle">Antenna</text>
+            </g>
+            <g id="crew-dots" aria-hidden="true">
+              <circle data-crew-dot="1" r="6" transform="translate(356 45)"/>
+              <circle data-crew-dot="2" r="6" transform="translate(370 53)"/>
+              <circle data-crew-dot="3" r="6" transform="translate(356 61)"/>
+            </g>
+          </svg>
+          <span id="radar-location" class="sr-only">All three crew members are at the antenna.</span>
+        </figure>
       </section>
-    </div>
 
-    <div id="toolbar" class="toolbar" aria-label="Game controls">
-      <div class="touch-movement" role="group" aria-label="Movement controls">
-        <button type="button" class="move-key move-up" data-move="up" aria-label="Move up">↑</button>
-        <button type="button" class="move-key move-left" data-move="left" aria-label="Move left">←</button>
-        <button type="button" class="move-key move-down" data-move="down" aria-label="Move down">↓</button>
-        <button type="button" class="move-key move-right" data-move="right" aria-label="Move right">→</button>
-        <button type="button" class="move-key touch-interact" data-action="interact">Interact</button>
+      <section class="instrument" aria-labelledby="instrument-title" data-inert-when-dialog>
+        <div class="instrument-heading">
+          <div class="radio-mark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="instrument-name">
+            <p id="instrument-kicker">Incoming transmission</p>
+            <h2 id="instrument-title">Antenna team</h2>
+          </div>
+        </div>
+        <p id="instrument-copy">“Two minutes to finish the check. Six minutes to shelter. What’s our call?”</p>
+        <div id="action-area" aria-label="Instrument actions"></div>
+      </section>
+
+      <div class="controls" aria-label="Game controls" data-inert-when-dialog>
+        <div class="dpad" role="group" aria-label="Movement">
+          <button type="button" class="move-up" data-move="up" aria-label="Move up">↑</button>
+          <button type="button" class="move-left" data-move="left" aria-label="Move left">←</button>
+          <button type="button" class="move-down" data-move="down" aria-label="Move down">↓</button>
+          <button type="button" class="move-right" data-move="right" aria-label="Move right">→</button>
+        </div>
+        <div class="control-commands">
+          <button type="button" id="interact" class="use-control">Use crew radio</button>
+          <div class="utility-controls">
+            <button type="button" id="pause"><span class="pause-mark" aria-hidden="true"></span>Pause</button>
+            <button type="button" id="help">Help</button>
+          </div>
+        </div>
+        <p id="key-hint" class="key-hint">Arrows / WASD &nbsp; Move <span aria-hidden="true">·</span> E &nbsp; Use station</p>
       </div>
-      <p class="keyboard-hint"><kbd>WASD</kbd> / <kbd>↑ ↓ ← →</kbd> Move <span aria-hidden="true">·</span> <kbd>E</kbd> Interact</p>
-    </div>
-    <noscript>Enable JavaScript in your browser to play the training simulation.</noscript>
-  </main>
+      <dialog id="dialog" aria-label="Shift panel"></dialog>
+      <p id="announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
+      <noscript>Enable JavaScript to play the training shift.</noscript>
+    </section>
 
+    <section class="map-panel" aria-labelledby="map-title">
+      <header class="map-header">
+        <h2 id="map-title">Tower floor</h2>
+        <span class="map-coordinates">Mars surface</span>
+      </header>
+      <div id="world" class="world" role="img" aria-label="Overhead view of the tower. Sun report, radiation and crew stations line the north wall. The phone is on the west wall and the magnet trainer is in the southeast." data-spawn-x="10" data-spawn-y="6" data-spawn-facing="up" data-min-x="2" data-min-y="4" data-max-x="13" data-max-y="12">
+        <span class="map-sign shelter-sign">Shelter</span>
+        <span class="map-sign north-arrow" aria-hidden="true">▲ N</span>
+        <div class="station station-sun" data-station="sun" data-x="4" data-y="5" style="--x:4;--y:5">
+          <div class="prop"></div><span class="station-label">Sun report</span>
+        </div>
+        <div class="station station-radiation" data-station="radiation" data-x="7" data-y="5" style="--x:7;--y:5">
+          <div class="prop"></div><span class="station-label">Radiation</span>
+        </div>
+        <div class="station station-crew" data-station="crew" data-x="10" data-y="5" data-guide="true" data-near="true" style="--x:10;--y:5">
+          <div class="prop"></div><span class="station-label">Crew</span>
+        </div>
+        <div class="station station-phone" data-station="phone" data-x="2" data-y="8" style="--x:2;--y:8">
+          <div class="prop"></div><span class="station-label">Phone</span>
+        </div>
+        <div class="station station-magnet" data-station="magnet" data-x="12" data-y="10" style="--x:12;--y:10">
+          <div class="prop"></div><span class="station-label">Magnet lab</span>
+        </div>
+        <div class="staff" data-block data-x="11" data-y="7" style="--x:11;--y:7">
+          <span class="staff-sprite"></span><span class="staff-label">Instructor</span>
+        </div>
+        <div id="player" class="player" data-facing="up" data-frame="0" style="--x:10;--y:6"></div>
+        <span class="map-sign airlock-sign">Airlock</span>
+      </div>
+      <footer class="map-footer" id="station-hint">Face a station, then use it from the console.</footer>
+    </section>
+  </main>
 </body>
 </html>

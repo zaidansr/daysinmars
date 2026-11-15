@@ -1,213 +1,515 @@
 (() => {
   'use strict';
 
-  const select = (selector) => document.querySelector(selector);
-  const world = select('#world');
-  const player = select('#player');
-  const dialog = select('#dialog');
-  const toolbar = select('#toolbar');
-  const display = select('.donki-display');
-  const missionActions = select('.mission-actions');
-  const title = select('#dialog-title');
-  const content = select('#dialog-content');
-  const clock = select('#clock');
-  const status = select('#status');
-  const alert = select('#alert');
-  const prompt = select('#prompt');
-  const launch = select('[data-action="start"]');
-  const keys = new Set();
-  const moves = new Map([
-    ['w', 'up'], ['a', 'left'], ['s', 'down'], ['d', 'right'],
-    ['arrowup', 'up'], ['arrowleft', 'left'], ['arrowdown', 'down'], ['arrowright', 'right'],
-  ]);
-  // The grid uses the astronaut's feet as its anchor.
-  const floor = [
-    '##############',
-    '##..........##',
-    '###.........##',
-    '###.........##',
-    '###.........##',
-    '###.........##',
-    '#.......######',
-    '#.......######',
-    '###...########',
-  ];
-  const steps = {
+  const get = (id) => document.getElementById(id);
+  const world = get('world');
+  const player = get('player');
+  const alert = get('alert');
+  const actions = get('action-area');
+  const interactButton = get('interact');
+  const dialog = get('dialog');
+  const keyHint = get('key-hint');
+  const stationHint = get('station-hint');
+  const crewDots = [...document.querySelectorAll('[data-crew-dot]')];
+  const dialogBackground = document.querySelectorAll('[data-inert-when-dialog]');
+  const stepMs = 150;
+  const minuteMs = 8_000;
+  const riseMinute = 5;
+  const endMinute = 8;
+  const workMinutes = 2;
+  const travelMinutes = 6;
+  const orders = {
+    now: { name: 'Head to shelter now', leave: 0, reply: 'Copy. Heading to shelter now.' },
+    finish: { name: 'Finish the check, then shelter', leave: workMinutes, reply: 'Copy. Two minutes to finish, then we will head back.' },
+  };
+  const directions = {
     up: { x: 0, y: -1 }, down: { x: 0, y: 1 },
     left: { x: -1, y: 0 }, right: { x: 1, y: 0 },
   };
-  const stations = {
-    donki: { x: 3, y: 1, name: 'DONKI desk' },
-    rad: { x: 6, y: 1, name: 'RAD monitor' },
-    crew: { x: 11, y: 1, name: 'crew console' },
-    instructor: { x: 3, y: 2, name: 'instructor' },
-    phone: { x: 11, y: 3, name: 'hint phone' },
-    lab: { x: 10, y: 5, name: 'magnet lab' },
-    desk: { x: 6, y: 7, name: 'shift desk' },
+  const moveKeys = {
+    arrowup: 'up', w: 'up', arrowdown: 'down', s: 'down',
+    arrowleft: 'left', a: 'left', arrowright: 'right', d: 'right',
   };
-  const tilePoint = ({ x, y }) => ({ x: 11 + x * 6, y: 33 + y * 6 });
-  const sameTile = (a, b) => a.x === b.x && a.y === b.y;
-  const canWalk = ({x, y}) => floor[y]?.[x] === '.';
-  const lessons = ['donki', 'rad', 'crew'];
-  const milestones = { notice: 14, arrival: 38, clear: 82, finish: 145 };
-  const travelMinutes = 12;
-  const archive = 'https://www.jpl.nasa.gov/news/nasa-watches-mars-light-up-during-epic-solar-storm/';
-  const donkiInfo = 'https://ccmc.gsfc.nasa.gov/tools/DONKI/';
-  const initialPrompt = prompt?.textContent;
-  let tile = { x: 6, y: 4 };
-  let position = tilePoint(tile);
-  let movement = null;
-  let route = [];
-  let pendingDirection = null;
-  let focusBeforePanel = null;
-  const previousRuns = [];
-  let destination = null;
-  let phase = 'welcome';
-  let lesson = 0;
-  let hintCount = 0;
-  let hintTopic = '';
-  let shift = null;
-  let audioContext;
-  let lastFrame;
-  let elapsed = 0;
-  let previousNearest;
+  const stationNames = {
+    sun: 'Sun Report', radiation: 'radiation monitor', crew: 'crew console',
+    phone: 'hint phone', magnet: 'magnet lab', instructor: 'instructor',
+  };
+  const watchMessage = 'Fast particles could arrive in 4–8 min.';
+  const whyMessage = 'The report gives a range because the arrival time is uncertain. Compare the earliest arrival with how long it takes the crew to reach shelter.';
+  const sunSource = 'https://ccmc.gsfc.nasa.gov/tools/DONKI/';
+  const marsSource = 'https://www.jpl.nasa.gov/news/nasa-watches-mars-light-up-during-epic-solar-storm/';
+  const settingsKey = 'mars-tower-settings';
+  const dots = [[-9, -8], [5, 0], [-9, 8]];
 
-  function shiftTime(minute) {
-    const hour = String(9 + Math.floor(minute / 60)).padStart(2, '0');
-    return `${hour}:${String(minute % 60).padStart(2, '0')}`;
-  }
+  const makeTile = (x, y) => ({ x, y });
+  const readCoordinate = (value, fallback) => value === undefined ? fallback : Number(value);
+  const offset = (tile, direction) => makeTile(tile.x + directions[direction].x, tile.y + directions[direction].y);
+  const tileId = ({ x, y }) => `${x},${y}`;
+  const lerp = (from, to, progress) => from + (to - from) * progress;
+  const setText = (element, content) => {
+    if (element && element.textContent !== content) element.textContent = content;
+  };
+  const button = (id, label, className = '') =>
+    `<button type="button" data-choice="${id}"${className ? ` class="${className}"` : ''}>${label}</button>`;
+  const row = (...buttons) => `<div class="action-row">${buttons.join('')}</div>`;
 
-  const button = (action, label, primary = false) =>
-    `<button type="button" data-choice="${action}"${primary ? ' class="primary"' : ''}>${label}</button>`;
-  const actions = (...buttons) => `<div class="action-row">${buttons.join('')}</div>`;
-  const feedback = (message) => message ? `<p class="feedback" role="status">${message}</p>` : '';
+  const spawn = makeTile(readCoordinate(world.dataset.spawnX, 10), readCoordinate(world.dataset.spawnY, 6));
+  const spawnFacing = world.dataset.spawnFacing || 'up';
+  const bounds = {
+    minX: readCoordinate(world.dataset.minX, 2), maxX: readCoordinate(world.dataset.maxX, 13),
+    minY: readCoordinate(world.dataset.minY, 4), maxY: readCoordinate(world.dataset.maxY, 12),
+  };
+  const stations = new Map();
+  const stationTiles = new Map();
+  const blocked = new Set();
 
-  function openPanel(heading, body) {
-    keys.clear();
-    pendingDirection = null;
-    destination = null;
-    route = [];
-    if (movement) {
-      movement = null;
-      position = tilePoint(tile);
-      renderPlayer();
-    }
-    if (dialog.hidden) focusBeforePanel = document.activeElement;
-    title.textContent = heading;
-    content.innerHTML = body;
-    content.scrollTop = 0;
-    dialog.hidden = false;
-    dialog.insertBefore(alert, content);
-    missionActions.inert = true;
-    world.inert = true;
-    toolbar.inert = true;
-    title.focus({ preventScroll: true });
-    if (dialog.getBoundingClientRect().top < 0) dialog.scrollIntoView({ block: 'start' });
-    updateDisplay();
-  }
-
-  function closePanel() {
-    display.insertBefore(alert, dialog);
-    dialog.hidden = true;
-    missionActions.inert = false;
-    world.inert = false;
-    toolbar.inert = false;
-    if (focusBeforePanel && focusBeforePanel !== document.body) {
-      focusBeforePanel.focus({ preventScroll: true });
-    }
-    updateDisplay();
-  }
-
-  function renderPlayer() {
-    player.style.left = `${position.x}%`;
-    player.style.top = `${position.y}%`;
-    player.dataset.walking = String(Boolean(movement));
-  }
-
-  function nearby() {
-    if (movement) return null;
-    return Object.keys(stations).find(key => sameTile(tile, stations[key])) ?? null;
-  }
-
-  function pathTo(target, origin) {
-    const queue = [{ tile: origin, path: [] }];
-    const visited = new Set([`${origin.x},${origin.y}`]);
-    for (const node of queue) {
-      if (sameTile(node.tile, target)) return node.path;
-      for (const [direction, step] of Object.entries(steps)) {
-        const next = { x: node.tile.x + step.x, y: node.tile.y + step.y };
-        const key = `${next.x},${next.y}`;
-        if (!canWalk(next) || visited.has(key)) continue;
-        visited.add(key);
-        queue.push({ tile: next, path: [...node.path, direction] });
+  // Station and furniture footprints come from the same grid coordinates as the room art.
+  for (const prop of world.querySelectorAll('[data-station], [data-block]')) {
+    const { station, x, y, width = 1, height = 1 } = prop.dataset;
+    if (x === undefined || y === undefined) continue;
+    if (station) stations.set(station, prop);
+    for (let dy = 0; dy < Number(height); dy++) {
+      for (let dx = 0; dx < Number(width); dx++) {
+        const id = tileId(makeTile(Number(x) + dx, Number(y) + dy));
+        blocked.add(id);
+        if (station) stationTiles.set(id, station);
       }
     }
-    return [];
+  }
+
+  const settings = { reading: false, assisted: false, guidance: true, sound: false };
+
+  try {
+    const saved = JSON.parse(localStorage.getItem(settingsKey));
+    for (const key of Object.keys(settings)) {
+      if (typeof saved?.[key] === 'boolean') settings[key] = saved[key];
+    }
+  } catch {
+    // Settings still work for this session if storage is unavailable.
+  }
+
+  const held = new Map();
+  let queuedDirection;
+  let tile = spawn;
+  let facing = spawnFacing;
+  let movement = null;
+  let route = [];
+  let destination = null;
+  let instrument = 'crew';
+  let shownActions = '';
+  let highlightedStation;
+  let radarProgress;
+  let briefing = 'orders';
+  let selectedOrder = null;
+  let elapsed = 0;
+  let previousFrame;
+  let overlay = null;
+  let sourceOrigin = null;
+  let restoreFocus = null;
+  let hintIndex = 0;
+  let audioContext;
+
+  function announce(message) {
+    setText(get('announcer'), message);
+  }
+
+  function saveSettings() {
+    try {
+      localStorage.setItem(settingsKey, JSON.stringify(settings));
+    } catch {
+      // Settings remain available in memory.
+    }
+  }
+
+  function crewState(time = elapsed / minuteMs) {
+    const leave = selectedOrder ? orders[selectedOrder].leave : Infinity;
+    const arrive = leave + travelMinutes;
+    const returning = time >= leave && time < arrive;
+    const sheltered = time >= arrive;
+    return {
+      label: sheltered ? 'In shelter' : returning ? 'Returning' : 'At antenna',
+      remaining: sheltered ? 0 : returning ? Math.ceil(arrive - time) : travelMinutes,
+      progress: sheltered ? 1 : returning ? (time - leave) / travelMinutes : 0,
+      elevated: time >= riseMinute,
+      returning,
+      sheltered,
+    };
+  }
+
+  function crewReport(crew) {
+    if (crew.sheltered) return 'All three of us are in shelter.';
+    if (crew.returning && crew.elevated) return 'The crew is still returning. Shelter will reduce their exposure.';
+    if (selectedOrder === 'finish' && crew.returning) return 'Antenna check complete. Heading to shelter.';
+    return selectedOrder ? orders[selectedOrder].reply : 'Two minutes to finish the check. Six minutes to shelter. What’s our call?';
+  }
+
+  function timingPaused() {
+    return Boolean(overlay || document.hidden || (settings.reading && instrument && briefing === 'running'));
+  }
+
+  function canWalk(point) {
+    return point.x >= bounds.minX && point.x <= bounds.maxX &&
+      point.y >= bounds.minY && point.y <= bounds.maxY && !blocked.has(tileId(point));
+  }
+
+  function facedStation() {
+    return movement ? null : stationTiles.get(tileId(offset(tile, facing)));
+  }
+
+  function clearMovement() {
+    held.clear();
+    queuedDirection = null;
+    route = [];
+    destination = null;
+    movement = null;
   }
 
   function beginStep(direction) {
-    const step = steps[direction];
-    const next = { x: tile.x + step.x, y: tile.y + step.y };
-    if (direction === 'left' || direction === 'right') player.dataset.facing = direction;
-    if (!canWalk(next)) return;
-    movement = { from: tilePoint(tile), to: tilePoint(next), tile: next, elapsed: 0 };
+    facing = direction;
+    const target = offset(tile, direction);
+    if (canWalk(target)) movement = { target, time: 0 };
+  }
+
+  function planRoute(station) {
+    const origin = movement?.target ?? tile;
+    const queue = [{ point: origin, trail: [] }];
+    const visited = new Set([tileId(origin)]);
+    for (const { point, trail } of queue) {
+      for (const direction of Object.keys(directions)) {
+        const next = offset(point, direction);
+        const id = tileId(next);
+        if (stationTiles.get(id) === station) return { trail, facing: direction };
+        if (!canWalk(next) || visited.has(id)) continue;
+        visited.add(id);
+        queue.push({ point: next, trail: [...trail, direction] });
+      }
+    }
+    return null;
+  }
+
+  function queueStep(direction) {
+    queuedDirection = direction;
+    route = [];
+    destination = null;
   }
 
   function walk(duration) {
     if (movement) {
-      movement.elapsed += duration;
-      const ratio = Math.min(movement.elapsed / 0.135, 1);
-      const { from, to } = movement;
-      position = { x: from.x + (to.x - from.x) * ratio, y: from.y + (to.y - from.y) * ratio };
-      if (ratio < 1) return;
-      tile = movement.tile;
+      movement.time += duration;
+      if (movement.time < stepMs) return;
+      tile = movement.target;
       movement = null;
+      if (instrument && instrument !== facedStation()) {
+        if (actions.contains(document.activeElement)) interactButton.focus();
+        instrument = null;
+      }
     }
-    const direction = pendingDirection ?? [...keys].at(-1);
-    pendingDirection = null;
-    if (direction) {
+    const direction = queuedDirection ?? Array.from(held.values()).at(-1);
+    queuedDirection = null;
+    if (direction) beginStep(direction);
+    else if (route.length) beginStep(route.shift());
+    else if (destination) {
+      facing = destination.facing;
+      const station = destination.station;
       destination = null;
-      route = [];
-      beginStep(direction);
-    } else if (route.length) {
-      beginStep(route.shift());
-    } else if (destination) {
-      const station = destination;
-      destination = null;
-      if (sameTile(tile, stations[station])) interact(station);
+      openInstrument(station);
     }
   }
 
-  function updateDisplay() {
-    const near = nearby();
-    if (near !== previousNearest) {
-      if (previousNearest) select(`[data-station="${previousNearest}"]`).dataset.near = 'false';
-      if (near) select(`[data-station="${near}"]`).dataset.near = 'true';
+  function renderPosition() {
+    const progress = movement ? Math.min(movement.time / stepMs, 1) : 0;
+    const x = movement ? lerp(tile.x, movement.target.x, progress) : tile.x;
+    const y = movement ? lerp(tile.y, movement.target.y, progress) : tile.y;
+    const frame = movement ? (progress < 0.5 ? '1' : '2') : '0';
+    if (player.dataset.frame !== frame) player.dataset.frame = frame;
+    if (player.dataset.facing !== facing) player.dataset.facing = facing;
+    if (player.style.getPropertyValue('--x') !== String(x)) player.style.setProperty('--x', x);
+    if (player.style.getPropertyValue('--y') !== String(y)) player.style.setProperty('--y', y);
+  }
+
+  function renderRoom() {
+    renderPosition();
+    const nearby = facedStation();
+    const guide = settings.guidance && (briefing === 'orders' ? 'crew' :
+      briefing === 'running' && tile === spawn ? 'radiation' : '');
+    if (highlightedStation !== nearby) {
+      if (highlightedStation) stations.get(highlightedStation).dataset.near = 'false';
+      if (nearby) stations.get(nearby).dataset.near = 'true';
+      highlightedStation = nearby;
+      interactButton.setAttribute('aria-disabled', String(!nearby));
     }
-    if (prompt && (near !== previousNearest || (phase !== 'welcome' && !near))) {
-      const verb = near === 'instructor' ? 'TALK' : 'INTERACT';
-      const promptText = near ? `PRESS E TO ${verb}` :
-        (phase === 'welcome' ? initialPrompt : 'WALK UP TO A STATION');
-      if (prompt.textContent !== promptText) prompt.textContent = promptText;
-      prompt.dataset.active = near ? 'true' : 'false';
-      previousNearest = near;
+    if (world.dataset.guidance !== String(guide || '')) {
+      world.dataset.guidance = guide || '';
+      for (const [station, prop] of stations) prop.dataset.guide = String(station === guide);
     }
-    if (clock && shift) {
-      const time = shiftTime(shift.minute);
-      if (clock.textContent !== time) clock.textContent = time;
+    setText(interactButton, nearby === 'instructor' ? 'Talk to instructor' :
+      nearby ? `Use ${stationNames[nearby]}` : 'Use station');
+    setText(stationHint, guide === 'radiation' ? 'Walk to Radiation to check the reading.' :
+      nearby ? `Facing ${stationNames[nearby]}` : 'Walk up to a station and face it.');
+  }
+
+  function renderRadar(crew) {
+    if (crew.progress !== radarProgress) {
+      radarProgress = crew.progress;
+      const x = lerp(365, 80, crew.progress);
+      for (const [index, mark] of crewDots.entries()) {
+        const [dx, dy] = dots[index];
+        mark.setAttribute('transform', `translate(${(x + dx).toFixed(2)} ${53 + dy})`);
+      }
     }
-    if (status && phase !== 'welcome') {
-      const statusText = phase === 'solo' ? (!dialog.hidden ? 'PAUSED' : 'SOLO SHIFT') :
-        phase === 'complete' ? 'SHIFT COMPLETE' : 'TRAINING';
-      if (status.textContent !== statusText) status.textContent = statusText;
+    setText(get('crew-status'), crew.label);
+    const minutes = `${crew.remaining} ${crew.remaining === 1 ? 'minute' : 'minutes'}`;
+    const routeText = crew.sheltered ? 'All three crew members are in shelter.' :
+      crew.returning ? `All three crew members are returning. ${minutes} to shelter.` :
+        `All three crew members are at the antenna. From there, the walk to shelter takes ${minutes}.`;
+    setText(get('radar-location'), routeText);
+  }
+
+  function renderTelemetry(crew) {
+    const level = crew.elevated ? 'Elevated' : 'Normal';
+    setText(get('radiation'), level);
+    setText(get('walk'), `${travelMinutes} min`);
+    setText(get('clock'), `MIN ${String(Math.floor(elapsed / minuteMs)).padStart(2, '0')} / 08`);
+    const quiet = briefing === 'explore' && selectedOrder === null;
+    const alertLevel = quiet ? 'quiet' : crew.elevated ? 'elevated' : 'warning';
+    if (alert.dataset.level !== alertLevel) alert.dataset.level = alertLevel;
+    setText(alert, quiet ? 'Training shift ended.' :
+      crew.elevated ? 'Radiation is higher than usual.' : watchMessage);
+    const pausedMessage = get('paused-status');
+    if (pausedMessage) pausedMessage.hidden = !(timingPaused() && briefing === 'running');
+    setText(keyHint, briefing === 'running' && timingPaused() ? 'Paused while you read' :
+      briefing === 'orders' && instrument === 'crew' ? '↑ ↓ Select · E Confirm · Esc Back' :
+        'Arrows / WASD: move · E: use station');
+  }
+
+  function instrumentContent(crew) {
+    if (instrument === 'sun') {
+      return ['Sun Report', 'Training forecast', 'The Sun sent out fast particles. They could reach Mars in 4–8 training minutes.',
+        button('sources', 'NASA sources', 'sub-action')];
     }
-    if (launch) {
-      const label = phase === 'welcome' ? 'Start training' : phase === 'complete' ? 'View debrief' : 'Talk to instructor';
-      if (launch.textContent !== label) launch.textContent = label;
+    if (instrument === 'radiation') {
+      return ['Radiation monitor', crew.elevated ? 'Elevated outside' : 'Normal outside',
+        crew.elevated ? 'Radiation is higher than usual. The shelter reduces the crew’s exposure.' :
+          'The sensor measures radiation here on Mars. It is at its usual level.'];
+    }
+    if (instrument === 'crew' && briefing === 'orders') {
+      return ['Crew radio', 'Waiting for your call', `“${crewReport(crew)}”`,
+        `<div role="group" aria-label="Crew orders" data-order-group>${row(
+          button('now', orders.now.name), button('finish', orders.finish.name)
+        )}</div><div class="action-footer"><p>The crew will follow your order, then head to shelter.</p>${button('why', 'Why?', 'sub-action')}</div>`];
+    }
+    if (instrument === 'crew') {
+      const info = briefing === 'explore' && !selectedOrder ? 'This shift ended. You can start the scenario again from Pause.' : crewReport(crew);
+      return ['Crew radio', crew.label, info,
+        selectedOrder && briefing === 'explore' ? button('debrief', 'View debrief', 'sub-action') : ''];
+    }
+    if (instrument === 'phone') {
+      const hints = [
+        briefing === 'orders' ? 'Compare the earliest arrival in the warning with the six-minute walk.' :
+          'Watch the three dots on the crew radar as they move toward shelter.',
+        'The Sun Report gives an early warning. The Radiation Monitor measures what is happening here on Mars.',
+        'Shelter reduces the crew’s exposure. More time outside during higher radiation means more exposure.',
+      ];
+      return ['Hint phone', '', hints[hintIndex],
+        hintIndex < hints.length - 1 ? button('hint', 'Another hint', 'sub-action') : ''];
+    }
+    if (instrument === 'magnet') {
+      const available = briefing === 'explore';
+      return ['Magnet lab', available ? 'Optional activity' : 'Optional lab · after this shift',
+        available ? 'Compare how two particles move through a magnetic field.' : 'Visit again after the shift to test the magnetic field.',
+        available ? button('magnet', 'Open lab', 'sub-action') : ''];
+    }
+    if (instrument === 'instructor') {
+      return ['Instructor', '', briefing === 'orders' ? whyMessage :
+        'Use the radar to follow the crew, and check the radiation monitor for the outside reading.'];
+    }
+    if (briefing === 'orders') {
+      return ['Crew is waiting', 'Training shift', 'Return to the Crew station to send your order.'];
+    }
+    if (briefing === 'running') {
+      return ['Tower radio', crew.label, crewReport(crew)];
+    }
+    return ['Explore the tower', '', 'Face a station and use it to see what it does.'];
+  }
+
+  function renderInstrument(crew) {
+    const [title, kicker, copy, controls = ''] = instrumentContent(crew);
+    setText(get('instrument-title'), title);
+    const kickerElement = get('instrument-kicker');
+    if (kickerElement) kickerElement.hidden = !kicker;
+    setText(kickerElement, kicker);
+    setText(get('instrument-copy'), copy);
+    if (shownActions !== controls) {
+      const hadFocus = actions.contains(document.activeElement);
+      actions.innerHTML = controls;
+      shownActions = controls;
+      if (hadFocus) (actions.querySelector('button') ?? get('pause')).focus();
     }
   }
 
-  function prepareAudio() {
+  function render() {
+    const crew = crewState();
+    renderRoom();
+    renderRadar(crew);
+    renderTelemetry(crew);
+    renderInstrument(crew);
+  }
+
+  function showDialog(kind, title, body) {
+    if (!overlay) restoreFocus = document.activeElement;
+    overlay = kind;
+    clearMovement();
+    previousFrame = undefined;
+    dialog.innerHTML = `<header class="dialog-header"><h2 id="dialog-title" tabindex="-1">${title}</h2>
+      <button class="dialog-close" type="button" data-choice="close" aria-label="Back to the tower">×</button></header>
+      <div class="dialog-content">${body}</div>`;
+    dialog.hidden = false;
+    dialog.setAttribute('open', '');
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-labelledby', 'dialog-title');
+    dialogBackground.forEach((element) => { element.inert = true; });
+    get('dialog-title').focus();
+    render();
+  }
+
+  function closeDialog() {
+    if (!overlay) return;
+    overlay = null;
+    dialog.hidden = true;
+    dialog.removeAttribute('open');
+    dialogBackground.forEach((element) => { element.inert = false; });
+    previousFrame = undefined;
+    render();
+    const target = restoreFocus?.isConnected ? restoreFocus : get('pause');
+    target?.focus({ preventScroll: true });
+    restoreFocus = null;
+  }
+
+  function showSources() {
+    sourceOrigin = overlay;
+    showDialog('sources', 'NASA sources', `<p>This training scenario uses fictional timing. In May 2024, the Radiation Assessment Detector (RAD) aboard NASA’s Curiosity rover measured a large rise in radiation during a solar storm.</p>
+      <p><a href="${marsSource}" target="_blank" rel="noopener">Read NASA JPL’s report</a></p>
+      <p>NASA’s DONKI system records and connects space-weather observations and analyses. The Sun Report uses a fictional warning inspired by that work.</p>
+      <p><a href="${sunSource}" target="_blank" rel="noopener">Learn about NASA’s DONKI system</a></p>`);
+  }
+
+  function showPause() {
+    const shiftOpen = briefing === 'orders' || briefing === 'running';
+    showDialog('pause', 'Paused', `<p>Paused while you read.</p>
+      ${row(button('close', 'Keep playing'), button(shiftOpen ? 'leave-prompt' : 'replay', shiftOpen ? 'Leave shift' : 'Start a new shift'))}`);
+  }
+
+  function showHelp() {
+    const controls = Object.keys(settings).map((key) => {
+      const labels = {
+        reading: 'Reading mode pauses time at an open station',
+        assisted: 'Assisted station navigation',
+        guidance: 'Show station guides',
+        sound: 'Play radiation alert sound',
+      };
+      return `<label><input type="checkbox" data-setting="${key}"${settings[key] ? ' checked' : ''}> ${labels[key]}</label>`;
+    }).join('');
+    const shortcuts = settings.assisted ? row(...[...stations.keys()].map(
+      (station) => button(`go-${station}`, station === 'instructor' ? 'Instructor' :
+        stationNames[station].replace(/^./, (char) => char.toUpperCase()))
+    )) : '';
+    showDialog('help', 'Help', `<p>Move with the arrow keys, WASD, or the on-screen arrows. Face a station and press E, Space, or Use station. Esc opens Pause.</p>
+      <fieldset><legend>Settings</legend>${controls}</fieldset>
+      ${shortcuts}<p>${button('sources', 'NASA sources', 'sub-action')}</p>`);
+  }
+
+  function showDebrief() {
+    const order = orders[selectedOrder];
+    const arrive = order.leave + travelMinutes;
+    const outside = Math.max(0, arrive - riseMinute);
+    const summary = order.leave ? 'The crew finished the antenna check, then returned.' :
+      'You called the crew back right away. The antenna check is unfinished.';
+    showDialog('debrief', 'Crew sheltered', `<p>Let’s review your call.</p>
+      <ol class="timeline"><li><strong>0 min</strong> · ${order.name}</li>
+        <li><strong>5 min</strong> · Radiation rose</li>
+        <li><strong>${arrive} min</strong> · Crew reached shelter</li></ol>
+      <p>${summary} They spent <strong>${outside} ${outside === 1 ? 'minute' : 'minutes'} outside</strong> after radiation rose.</p>
+      <p>The warning gave a range. Leaving earlier reduced the time outside during higher radiation.</p>
+      ${row(button('replay-other', 'Try the other order'), button('explore', 'Explore the tower'))}
+      <p>${button('sources', 'NASA sources', 'sub-action')}</p>`);
+  }
+
+  function showMagnet(particle) {
+    const charged = particle === 'charged';
+    const description = charged ? 'In this example, the charged particle bends in the field.' :
+      'The neutral particle keeps going straight in this model.';
+    const path = charged ? 'M20 66H92 Q157 66 214 38 L278 14' : 'M20 66H278';
+    const chamber = `<svg viewBox="0 0 300 90" width="300" height="90" style="max-width:100%;height:auto" aria-hidden="true">
+      <rect x="92" y="8" width="122" height="72" fill="currentColor" opacity=".16"/>
+      <text x="153" y="27" text-anchor="middle" fill="currentColor" font-size="12">MAGNETIC FIELD</text>
+      ${particle ? `<path d="${path}" stroke="currentColor" stroke-width="3" stroke-dasharray="5 3" fill="none"/>
+        <circle cx="278" cy="${charged ? 14 : 66}" r="5" fill="currentColor"/>` : ''}</svg>`;
+    showDialog('magnet', 'Magnet lab', `<p>Send a particle across the field, then compare its path with the other particle.</p>
+      ${chamber}<p>${particle ? description : 'Which particle will change direction?'}</p>
+      ${row(button('charged', 'Send charged particle'), button('neutral', 'Send neutral particle'))}
+      <p>Magnetic fields can bend some charged particles’ paths. This model uses a field across the direction of travel.</p>`);
+    if (particle) dialog.querySelector(`[data-choice="${particle}"]`).focus();
+  }
+
+  function openInstrument(station) {
+    if (!station || station !== facedStation()) return;
+    instrument = station;
+    previousFrame = settings.reading ? undefined : previousFrame;
+    render();
+    focusInstrument();
+  }
+
+  function focusInstrument() {
+    const title = get('instrument-title');
+    title.tabIndex = -1;
+    title.focus({ preventScroll: true });
+  }
+
+  function startOrder(order) {
+    if (briefing !== 'orders' || instrument !== 'crew' || facedStation() !== 'crew' || overlay) return;
+    selectedOrder = order;
+    briefing = 'running';
+    // Once the order is sent, the radio confirmation remains visible without opening a reading panel.
+    instrument = null;
+    clearMovement();
+    previousFrame = undefined;
+    focusInstrument();
+    render();
+    announce(orders[order].reply);
+  }
+
+  function reset(other) {
+    if (briefing !== 'debrief' && briefing !== 'explore') return;
+    const lastOrder = selectedOrder;
+    selectedOrder = null;
+    elapsed = 0;
+    briefing = 'orders';
+    clearMovement();
+    tile = spawn;
+    facing = spawnFacing;
+    instrument = 'crew';
+    hintIndex = 0;
+    closeDialog();
+    setText(get('announcer'), 'Training shift ready. Choose when the crew will return.');
+    if (other) {
+      const order = lastOrder === 'now' ? 'finish' : 'now';
+      actions.querySelector(`[data-choice="${order}"]`)?.focus();
+    }
+  }
+
+  function explore(leftEarly = false) {
+    if (leftEarly) {
+      selectedOrder = null;
+      elapsed = 0;
+    }
+    briefing = 'explore';
+    instrument = null;
+    closeDialog();
+    announce(leftEarly ? 'Shift ended. Explore the tower.' : 'Shift complete. Explore the tower.');
+  }
+
+  function prepareSound() {
+    if (!settings.sound) return;
     const Audio = window.AudioContext || window.webkitAudioContext;
     if (!Audio) return;
     try {
@@ -218,451 +520,205 @@
     }
   }
 
-  function chime() {
-    if (audioContext?.state !== 'running') return;
+  function playAlert() {
+    if (!settings.sound || audioContext?.state !== 'running') return;
     const start = audioContext.currentTime;
-    for (const [index, frequency] of [523, 659, 784].entries()) {
-      const sound = audioContext.createOscillator();
-      const volume = audioContext.createGain();
-      const offset = start + index * 0.15;
-      sound.frequency.value = frequency;
-      volume.gain.setValueAtTime(0.0001, offset);
-      volume.gain.exponentialRampToValueAtTime(0.12, offset + 0.025);
-      volume.gain.exponentialRampToValueAtTime(0.0001, offset + 0.22);
-      sound.connect(volume);
-      volume.connect(audioContext.destination);
-      sound.start(offset);
-      sound.stop(offset + 0.22);
+    const tone = audioContext.createOscillator();
+    const volume = audioContext.createGain();
+    tone.frequency.value = 440;
+    volume.gain.setValueAtTime(0.001, start);
+    volume.gain.exponentialRampToValueAtTime(0.07, start + 0.04);
+    volume.gain.exponentialRampToValueAtTime(0.001, start + 0.22);
+    tone.connect(volume);
+    volume.connect(audioContext.destination);
+    tone.start(start);
+    tone.stop(start + 0.22);
+  }
+
+  function advance(duration) {
+    const before = elapsed / minuteMs;
+    elapsed = Math.min(endMinute * minuteMs, elapsed + duration);
+    const after = elapsed / minuteMs;
+    const events = [];
+    const order = orders[selectedOrder];
+    if (order.leave && before < order.leave && after >= order.leave) {
+      events.push('Antenna check complete. The crew is heading to shelter.');
     }
-  }
-
-  function showAlert(kind, message, sound = false) {
-    if (alert) {
-      alert.hidden = false;
-      alert.dataset.level = kind;
-      alert.dataset.active = 'true';
-      alert.textContent = message;
+    if (before < riseMinute && after >= riseMinute) {
+      events.push('Radiation is higher than usual. The crew is still returning. Shelter will reduce their exposure.');
+      playAlert();
     }
-    if (sound) chime();
-  }
-
-  function instructor() {
-    if (phase === 'solo') {
-      openPanel('Instructor', '<p>You have the tower. Check DONKI for reports, RAD for local readings, and CREW to talk to the team. The phone is here if you get stuck.</p>');
-      return;
+    if (before < order.leave + travelMinutes && after >= order.leave + travelMinutes) {
+      events.push('All three of us are in shelter.');
     }
-    if (phase === 'complete') {
-      debrief();
-      return;
+    if (after === endMinute) {
+      briefing = 'debrief';
+      showDebrief();
     }
-    if (phase === 'welcome') {
-      openPanel('Meet the instructor', `<p>Welcome to the Mars Radiation Tower. An astronaut team is outside inspecting an antenna. Your job is to watch space weather and help them decide when to work or shelter.</p>
-        <p>Walk with <strong>WASD</strong>, the arrow keys, or the on-screen arrows. Press <strong>E</strong> near a station, or tap a station to walk up to it.</p>
-        ${actions(button('training', 'Begin practice', true))}`);
-      return;
-    }
-    if (lesson === lessons.length) {
-      openPanel('The tower is yours', `<p>You checked a space-weather report, read the local radiation monitor, and practiced sending a crew command. Ready to run the tower on your own?</p>
-        <p>The simulation clock runs between panels and pauses whenever you read one. Watch for alerts and check the crew’s location before sending a command.</p>
-        ${actions(button('launch', 'Start solo shift', true), button('leave', 'Keep exploring'))}`);
-      return;
-    }
-    const guidance = [
-      'First, go to the left console labeled DONKI. Read the practice report and decide what it tells us about Mars.',
-      'Next, go to the middle console labeled RAD. Compare the normal reading with the practice reading.',
-      'Go to the right console labeled CREW. Check where the team is and send a practice command.',
-    ];
-    openPanel('Practice with the instructor', `<p>${guidance[lesson]}</p>
-      ${actions(button('leave', 'Back to the tower', true))}`);
-  }
-
-  function startTraining() {
-    phase = 'training';
-    instructor();
-  }
-
-  function practice(station, message = '') {
-    const index = lessons.indexOf(station);
-    const headings = ['DONKI practice', 'RAD practice', 'Crew practice'];
-    if (lesson < index) {
-      openPanel(headings[index], `<p>Visit the ${stations[lessons[lesson]].name} first. The instructor is by the left wall if you need directions.</p>`);
-      return;
-    }
-    const lessonsHtml = [
-      `<p class="eyebrow">Practice report</p><p>The Sun released a burst of fast particles. The tower has a heads-up. It could affect Mars later.</p>
-      <p><strong>What does this report tell you?</strong></p>`,
-      `<p class="eyebrow">Practice readings</p><div class="data-grid"><p>Usual reading <strong>2</strong></p><p>Current reading <strong>12</strong></p></div>
-      <p>RAD measures radiation where it is. More radiation recorded each minute means dose can build up faster.</p><p><strong>What changed?</strong></p>`,
-      `<p class="eyebrow">Practice crew</p>${crewRadar(100, 'Antenna site')}<p>The team is outside at the antenna. RAD shows high radiation. The habitat shelter is a short walk away.</p><p><strong>What command takes the team to shelter?</strong></p>`,
-    ];
-    const good = ['Check RAD for a local reading', 'Radiation is higher right now', 'Return to shelter'];
-    const other = ['The report gives the crew’s dose', 'Radiation stayed the same', 'Continue inspection'];
-    const retry = [
-      'A report gives us a heads-up. Which instrument could tell us what is happening here now?',
-      'Compare 12 with the usual reading of 2. Try again.',
-      'Continuing keeps the crew outside. What command moves them to the habitat?',
-    ];
-    const done = [
-      'Right. DONKI can give you a heads-up. Go to RAD to find out what the local instrument measures.',
-      'Right. The higher number means radiation is building up faster. Now check the crew console.',
-      'Right. The team heads to shelter. Return to the instructor for your handoff.',
-    ];
-    const result = lesson > index ? done[index] : message === 'retry' ? retry[index] : '';
-    openPanel(headings[index], `${lessonsHtml[index]}${feedback(result)}
-      ${lesson > index ? actions(button('leave', 'Back to the tower', true)) :
-        actions(button(`pass-${station}`, good[index], true), button(`retry-${station}`, other[index]))}
-      ${index === 0 ? `<p class="source-note"><a href="${donkiInfo}" target="_blank" rel="noopener">What NASA’s DONKI does ↗</a></p>` : ''}`);
-  }
-
-  function log(message) {
-    shift.timeline.push({ minute: shift.minute, message });
-  }
-
-  function startShift() {
-    phase = 'solo';
-    hintCount = 0;
-    elapsed = 0;
-    shift = { minute: 0, dose: 0, inspection: 8, location: 'antenna', travel: 0, waiting: false, timeline: [] };
-    log('Solo shift began. The crew was inspecting the antenna.');
-    showAlert('quiet', 'MONITORING · No space-weather alert');
-    closePanel();
-    updateDisplay();
-  }
-
-  function radiation() {
-    return shift.minute >= milestones.arrival && shift.minute < milestones.clear;
-  }
-
-  function advanceShift() {
-    shift.minute++;
-    if (shift.minute === milestones.notice) {
-      log('A DONKI-style report warned of fast particles from the Sun.');
-      showAlert('watch', 'WATCH · New space-weather report at DONKI', true);
-    }
-    if (shift.minute === milestones.arrival) {
-      log('RAD measured a sharp rise in local radiation.');
-      showAlert('danger', 'HIGH RADIATION · Check RAD and the crew', true);
-    }
-    if (shift.minute === milestones.clear) {
-      log('RAD returned to its usual level.');
-      showAlert('clear', 'RADIATION LOWER · Check whether the crew can resume', true);
-    }
-
-    const outside = shift.location !== 'shelter';
-    shift.dose += outside ? (radiation() ? 18 : 2) : (radiation() ? 1.5 : 0.3);
-
-    if (shift.travel) {
-      shift.travel--;
-      if (!shift.travel) {
-        shift.location = shift.location === 'going-in' ? 'shelter' : 'antenna';
-        log(shift.location === 'shelter' ? 'The crew reached the habitat shelter.' : 'The crew reached the antenna and picked up the inspection.');
-      }
-    } else if (shift.location === 'antenna' && shift.inspection < 100) {
-      shift.inspection = Math.min(100, shift.inspection + 1.7);
-      if (shift.inspection === 100) log('The crew finished the antenna inspection.');
-    }
-
-    if (shift.minute === milestones.finish) {
-      log('The shift ended.');
-      previousRuns.push({ inspection: Math.floor(shift.inspection), dose: Math.round(shift.dose) });
-      phase = 'complete';
-      showAlert('quiet', 'SHIFT COMPLETE · Review your debrief');
-      debrief();
-    }
-    updateDisplay();
-  }
-
-  function showDonki() {
-    const report = shift.minute >= milestones.notice;
-    openPanel('DONKI · Space weather', `<p class="eyebrow">Simulated report</p>
-      <p>${report ? 'A burst of fast-moving charged particles left the Sun. It may raise radiation near Mars. Check RAD for the local measurement and consider sending the crew to shelter before the particles arrive.' :
-        'No reports for this shift yet. Keep an eye on the alert banner while the crew works.'}</p>
-      <details><summary>About the real event</summary><p>On May 20, 2024, a solar storm sent energetic particles to Mars. Curiosity’s RAD instrument measured a sharp rise in radiation. This shift uses that event as a starting point and has its own timing and values.</p>
-      <p><a href="${archive}" target="_blank" rel="noopener">Read the NASA JPL event report ↗</a></p></details>`);
-  }
-
-  function showRad() {
-    const rate = radiation() ? 18 : 2;
-    openPanel('RAD · Local radiation', `<p class="eyebrow">Training measurements</p>
-      <div class="data-grid"><p>Current outside rate <strong>${rate} µGy/min</strong></p><p>Usual outside rate <strong>2 µGy/min</strong></p></div>
-      <p>${radiation() ? 'RAD is measuring more radiation than usual. The longer the crew stays outside, the more dose builds up.' :
-        'RAD is measuring the usual level. A crew member outside still receives a small dose each minute.'}</p>
-      <details><summary>What’s a dose?</summary><p>Rate tells us how quickly radiation adds up. Dose tells us how much energy from radiation has been left in something over time. A microgray (µGy) is a tiny unit of absorbed dose.</p></details>`);
-  }
-
-  function crewRadar(progress, label) {
-    const x = 56 + progress * 1.78;
-    const y = 120 - progress * 0.68;
-    const marks = [[-12, 12], [0, -10], [12, 12]];
-    return `<figure class="crew-radar">
-      <figcaption><strong>Crew radar</strong><span>Simulated positions</span></figcaption>
-      <svg viewBox="0 0 296 163" role="img" aria-label="Three crewmates at ${label}">
-        <defs><pattern id="radar-grid" width="16" height="16" patternUnits="userSpaceOnUse">
-          <path d="M 16 0 H 0 V 16" fill="none" stroke="#28574e" stroke-width="1"/>
-        </pattern></defs>
-        <rect width="296" height="163" fill="url(#radar-grid)"/>
-        <g class="radar-rings" fill="none" stroke="#356b5b">
-          <circle cx="148" cy="81" r="23"/><circle cx="148" cy="81" r="44"/><circle cx="148" cy="81" r="66"/>
-          <path d="M148 0v163M0 81h296"/>
-        </g>
-        <path d="M56 120L234 52" fill="none" stroke="#8bc6a0" stroke-width="2" stroke-dasharray="5 4"/>
-        <g fill="#d7eee0" font-size="11" font-weight="700">
-          <text x="12" y="151">SHELTER</text><text x="218" y="24">ANTENNA</text>
-        </g>
-        <g class="radar-team">${marks.map(([dx, dy], index) =>
-          `<g transform="translate(${x + dx} ${y + dy})">
-            <circle class="radar-ping" r="10"/><circle class="radar-dot" r="8"/>
-            <text class="radar-number" y="3.5" text-anchor="middle">${index + 1}</text></g>`).join('')}</g>
-      </svg>
-      <p>1–3 · Antenna team <span>${label}</span></p>
-    </figure>`;
-  }
-
-  function crewConsole(message = '') {
-    const { location, inspection, dose, travel, waiting } = shift;
-    const locations = {
-      antenna: 'Antenna site',
-      shelter: 'Habitat shelter',
-      'going-in': 'Walking to habitat',
-      'going-out': 'Walking to antenna',
-    };
-    const progress = Math.floor(inspection);
-    const crewStatus = travel ? `${travel} sim min left` : location === 'shelter' ?
-      (waiting ? 'Sheltered · waiting for your call' : 'Sheltered') : progress === 100 ? 'Inspection finished' : 'Inspecting';
-    const path = location === 'antenna' ? 100 : location === 'shelter' ? 0 :
-      location === 'going-in' ? (travel / travelMinutes) * 100 : (1 - travel / travelMinutes) * 100;
-    const options = location === 'antenna' ?
-      (progress < 100 ? actions(button('continue', 'Continue inspection', true), button('shelter', 'Return to shelter')) :
-        actions(button('shelter', 'Return to shelter', true))) :
-      location === 'shelter' && progress < 100 ?
-        actions(button('resume', 'Resume inspection', !radiation()), button('wait', 'Resume later', radiation())) : '';
-    openPanel('CREW · Antenna team', `${crewRadar(path, locations[location])}
-      <div class="data-grid"><p>Location <strong>${locations[location]}</strong></p>
-      <p>Status <strong>${crewStatus}</strong></p><p>Training dose <strong>${Math.round(dose)} µGy</strong></p>
-      <p>Inspection <strong>${progress}%</strong></p></div>
-      <p>One-way walk: ${travelMinutes} sim min. The crew keeps its inspection progress when it leaves the antenna.</p>
-      ${feedback(message)}${options}`);
-  }
-
-  function crewCommand(command) {
-    const { location, inspection } = shift;
-    if (command === 'continue' && location === 'antenna') {
-      if (inspection < 100) {
-        log('You told the crew to continue inspecting.');
-        crewConsole('Command received. The crew will keep inspecting when you close this panel.');
-      }
-    } else if (command === 'shelter' && location === 'antenna') {
-      shift.location = 'going-in';
-      shift.travel = travelMinutes;
-      log('You sent the crew toward the habitat shelter.');
-      crewConsole('The crew will walk to shelter when you close this panel.');
-    } else if (command === 'resume' && location === 'shelter' && inspection < 100) {
-      shift.location = 'going-out';
-      shift.waiting = false;
-      shift.travel = travelMinutes;
-      log('You sent the crew back to resume the antenna inspection.');
-      crewConsole('The crew will walk to the antenna and start where it left off.');
-    } else if (command === 'wait' && location === 'shelter' && !shift.waiting) {
-      shift.waiting = true;
-      log('You kept the crew in the shelter to resume later.');
-      crewConsole('The crew will stay in shelter until you choose Resume inspection.');
-    }
-  }
-
-  function help(next = false) {
-    let hints;
-    let topic = phase;
-    if (phase === 'welcome') {
-      hints = ['Find your instructor.', 'The instructor is the person by the left wall.', 'Walk up to the instructor and press E, or choose Start training.'];
-    } else if (phase === 'training') {
-      const station = lessons[lesson] || 'instructor';
-      topic = station;
-      const specifics = {
-        donki: 'A report gives a heads-up. Check RAD to see what is happening where you are.',
-        rad: 'The reading of 12 is higher than the usual 2.',
-        crew: 'Return to shelter is the command that moves the practice crew away from the antenna.',
-        instructor: 'Ask the instructor for the handoff. Choose Start solo shift when ready.',
-      };
-      hints = [`Your next stop is the ${stations[station].name}.`,
-        `Walk to the ${stations[station].name} and press E, or tap it.`, specifics[station]];
-    } else if (phase === 'complete') {
-      hints = ['See how your shift went.', 'Open the shift desk to see your debrief.', 'In the debrief, choose Replay solo shift to try a different plan.'];
-    } else if (shift.minute < milestones.notice) {
-      topic = 'watch';
-      hints = ['Watch for an alert.', 'You can check RAD and crew progress while waiting for a report.', 'When the DONKI alert arrives, read the report and consider how long it takes to reach shelter.'];
-    } else if (shift.minute < milestones.clear) {
-      topic = `storm-${shift.location}`;
-      if (shift.location === 'shelter') {
-        hints = ['Watch the radiation reading while the crew is sheltered.', 'Check RAD again after the next global alert.', 'When RAD returns to its usual level, open CREW and select Resume inspection if work remains.'];
-      } else if (shift.location === 'going-in') {
-        hints = ['Check how far the crew has to go.', 'You can read the remaining walk time in CREW.', 'Close the crew console to let the crew finish walking. Wait for RAD to drop before sending them back.'];
-      } else {
-        hints = ['Check the instruments and the crew’s location.', 'The crew needs 12 simulated minutes to reach the shelter. Dose builds up while they walk.', 'To reduce time outside during the storm, open CREW and select Return to shelter. Wait for RAD to drop before sending the crew back.'];
-      }
-    } else {
-      topic = 'clear';
-      hints = ['Look at the latest RAD reading.', 'If the crew is in shelter, check how much work remains.', 'If there is work left, open CREW and select Resume inspection. The crew keeps the progress it already made.'];
-    }
-    if (topic !== hintTopic) {
-      hintTopic = topic;
-      hintCount = 0;
-    }
-    if (next) hintCount++;
-    openPanel('Hint phone', `<p class="eyebrow">Hint ${hintCount + 1}</p><p>${hints[Math.min(hintCount, hints.length - 1)]}</p>
-      ${actions(button('hint', 'Another hint', true), button('leave', 'Back to the tower'))}`);
-  }
-
-  function lab(particle = 'none') {
-    const charged = particle === 'charged';
-    const observed = particle !== 'none';
-    openPanel('Magnet lab', `<p>Send two particles through a magnetic field and compare their paths.</p>
-      <div class="lab-diagram ${particle}" aria-label="${observed ? (charged ? 'The charged particle bends upward in the magnetic field.' : 'The neutral particle passes straight through the field.') : 'A chamber with a magnetic field between its poles.'}">
-      <svg viewBox="0 0 320 115" role="presentation"><rect x="100" y="9" width="125" height="96" rx="12" fill="#754eae" opacity=".33"/>
-      <text x="162" y="28" text-anchor="middle" fill="currentColor" font-size="11">MAGNETIC FIELD</text>
-      ${observed ? `<path d="${charged ? 'M20 78 H100 Q162 78 225 50 L298 18' : 'M20 78 H298'}" fill="none" stroke="#ffd284" stroke-width="4" stroke-dasharray="7 4"/>
-      <circle cx="298" cy="${charged ? 18 : 78}" r="6" fill="#fff0ae"/>` : ''}</svg></div>
-      ${actions(button('charged', 'Send charged particle', particle !== 'charged'), button('neutral', 'Send neutral particle', particle === 'charged'))}
-      ${observed ? feedback(charged ? 'The charged particle bends as it crosses the field.' : 'The neutral particle keeps going straight in this model.') : ''}
-      <details><summary>How does this connect to Mars?</summary><p>Magnetic fields can bend the paths of moving charged particles. Other kinds of radiation can still reach the surface, and a small magnet would provide little protection for a crew.</p></details>`);
-  }
-
-  function debrief() {
-    const current = previousRuns.at(-1);
-    const prior = previousRuns.at(-2);
-    const doseChange = prior ? current.dose - prior.dose : 0;
-    const comparison = prior ? `<p>Previous shift: ${prior.inspection}% inspected, ${prior.dose} µGy dose.
-      ${doseChange === 0 ? 'The dose stayed the same.' : `This time the crew absorbed ${Math.abs(doseChange)} µGy ${doseChange < 0 ? 'less' : 'more'}.`}</p>` :
-      '<p>Replay the shift to compare a different shelter decision.</p>';
-    openPanel('Shift debrief', `<p class="eyebrow">Solo shift ${previousRuns.length}</p>
-      <div class="data-grid"><p>Inspection <strong>${current.inspection}%</strong></p><p>Crew training dose <strong>${current.dose} µGy</strong></p></div>
-      ${comparison}
-      <h3>What happened</h3><ol class="timeline">${shift.timeline.map(({ minute, message }) =>
-        `<li><time>${shiftTime(minute)}</time> ${message}</li>`).join('')}</ol>
-      <p>This shift compresses time and uses made-up radiation rates. On May 20, 2024, NASA’s Curiosity rover measured a sharp rise in radiation on Mars. <a href="${archive}" target="_blank" rel="noopener">Read about the real storm ↗</a></p>
-      ${actions(button('launch', 'Replay solo shift', true), button('lab', 'Visit magnet lab'))}`);
-  }
-
-  function desk() {
-    if (phase === 'complete') debrief();
-    else if (phase === 'solo') {
-      openPanel('Shift desk', `<p>Your shift ends at ${shiftTime(milestones.finish)}. Keep an eye on the alert banner and check in with the crew.</p>`);
-    } else instructor();
-  }
-
-  function interact(station) {
-    if (!station) return;
-    if (station === 'instructor') instructor();
-    else if (station === 'phone') help();
-    else if (station === 'lab') lab();
-    else if (station === 'desk' || phase === 'complete') desk();
-    else if (phase === 'welcome') instructor();
-    else if (phase === 'training') practice(station);
-    else if (station === 'donki') showDonki();
-    else if (station === 'rad') showRad();
-    else if (station === 'crew') crewConsole();
+    if (events.length) announce(events.join(' '));
   }
 
   function frame(now) {
-    const duration = Math.min((now - (lastFrame ?? now)) / 1000, 0.06);
-    lastFrame = now;
-    if (dialog.hidden) {
-      walk(duration);
-      renderPlayer();
-      if (phase === 'solo' && dialog.hidden) {
-        elapsed += duration;
-        if (elapsed >= 0.85) {
-          elapsed -= 0.85;
-          advanceShift();
-        }
-      }
-      updateDisplay();
+    const duration = previousFrame === undefined ? 0 : Math.max(0, now - previousFrame);
+    previousFrame = now;
+    if (!document.hidden && !overlay) {
+      const mayAdvance = briefing === 'running' && !timingPaused();
+      walk(Math.min(duration, stepMs));
+      if (mayAdvance) advance(duration);
+      render();
     }
     requestAnimationFrame(frame);
   }
 
-  document.addEventListener('keydown', (event) => {
-    if (!dialog.hidden) {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        closePanel();
+  function choose(name) {
+    if (name === 'now' || name === 'finish') {
+      startOrder(name);
+    } else if (name.startsWith('go-') && overlay === 'help' && settings.assisted) {
+      const station = name.slice(3);
+      const path = planRoute(station);
+      closeDialog();
+      if (path) {
+        route = path.trail;
+        destination = { station, facing: path.facing };
       }
-      return;
+    } else if (name === 'close') {
+      if (overlay === 'debrief') explore();
+      else if (overlay === 'sources' && sourceOrigin === 'debrief') showDebrief();
+      else if (overlay === 'sources' && sourceOrigin === 'help') showHelp();
+      else closeDialog();
+    } else if (name === 'leave-prompt') {
+      showDialog('leave', 'Leave this shift?', `<p>The current shift will end. You can still explore the tower.</p>
+        ${row(button('close', 'Keep playing'), button('leave', 'Leave'))}`);
+    } else if (name === 'leave') explore(true);
+    else if (name === 'explore') explore();
+    else if (name === 'debrief') showDebrief();
+    else if (name === 'replay' || name === 'replay-other') reset(name === 'replay-other');
+    else if (name === 'sources') showSources();
+    else if (name === 'why') showDialog('why', 'Why a range?', `<p>${whyMessage}</p>${row(button('close', 'Back to the crew'))}`);
+    else if (name === 'magnet') showMagnet();
+    else if (name === 'charged' || name === 'neutral') showMagnet(name);
+    else if (name === 'hint') {
+      hintIndex++;
+      render();
     }
-    if (event.altKey || event.ctrlKey || event.metaKey) return;
-    const key = event.key.toLowerCase();
-    if (moves.has(key)) {
-      event.preventDefault();
-      if (!event.repeat) pendingDirection = moves.get(key);
-      keys.add(moves.get(key));
-    } else if (key === 'e' && !event.repeat) {
-      prepareAudio();
-      interact(nearby());
-    }
-  });
-  document.addEventListener('keyup', (event) => keys.delete(moves.get(event.key.toLowerCase())));
-  window.addEventListener('blur', () => keys.clear());
-  select('#dialog-close')?.addEventListener('click', () => closePanel());
-  dialog.addEventListener('click', (event) => {
-    const choice = event.target.closest('[data-choice]')?.dataset.choice;
-    if (!choice) return;
-    if (choice === 'leave') closePanel();
-    else if (choice === 'training') startTraining();
-    else if (choice === 'launch') startShift();
-    else if (choice === 'hint') help(true);
-    else if (choice === 'lab') lab();
-    else if (choice === 'charged' || choice === 'neutral') lab(choice);
-    else if (choice.startsWith('pass-')) {
-      lesson++;
-      hintCount = 0;
-      practice(choice.slice(5));
-    } else if (choice.startsWith('retry-')) practice(choice.slice(6), 'retry');
-    else crewCommand(choice);
-  });
+  }
 
-  document.addEventListener('click', (event) => {
-    if (!dialog.hidden) return;
-    const target = event.target.closest('[data-station], [data-action]');
-    if (!target) return;
-    prepareAudio();
-    const { station, action } = target.dataset;
-    if (station && stations[station] && world.contains(target)) {
-      if (!movement && sameTile(tile, stations[station])) interact(station);
-      else {
-        destination = station;
-        route = pathTo(stations[station], movement?.tile ?? tile);
-      }
-    } else if (action === 'interact') {
-      const near = nearby();
-      if (near) interact(near);
-      else if (prompt) prompt.textContent = 'WALK UP TO A STATION';
-    } else if (action === 'help') help();
-    else if (action === 'lab') lab();
-    else if (action === 'start') instructor();
-    else if (action === 'debrief') desk();
-  });
-
-  for (const control of document.querySelectorAll('[data-move]')) {
-    const direction = control.dataset.move;
-    control.addEventListener('pointerdown', (event) => {
-      event.preventDefault();
-      control.setPointerCapture(event.pointerId);
-      pendingDirection = direction;
-      keys.add(direction);
-    });
-    for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
-      control.addEventListener(type, () => keys.delete(direction));
-    }
-    control.addEventListener('click', (event) => {
-      if (event.detail === 0) {
-        pendingDirection = direction;
+  function bindActions(container) {
+    container.addEventListener('click', (event) => {
+      const choice = event.target.closest('[data-choice]')?.dataset.choice;
+      if (choice) {
+        prepareSound();
+        choose(choice);
       }
     });
   }
 
-  renderPlayer();
-  title.tabIndex = -1;
-  alert?.setAttribute('role', 'status');
-  alert?.setAttribute('aria-live', 'polite');
-  updateDisplay();
+  function operateStation() {
+    if (!overlay) openInstrument(facedStation());
+  }
+
+  bindActions(actions);
+  bindActions(dialog);
+  interactButton.addEventListener('click', operateStation);
+  get('pause').addEventListener('click', showPause);
+  get('help').addEventListener('click', showHelp);
+  dialog.addEventListener('change', (event) => {
+    const setting = event.target.dataset.setting;
+    if (!setting) return;
+    settings[setting] = event.target.checked;
+    saveSettings();
+    prepareSound();
+    if (setting === 'assisted') {
+      showHelp();
+      dialog.querySelector('[data-setting="assisted"]').focus();
+    }
+  });
+
+  document.addEventListener('keydown', (event) => {
+    const key = event.key.toLowerCase();
+    if (event.altKey || event.ctrlKey || event.metaKey || event.isComposing) return;
+    if (key === 'escape' && !event.repeat) {
+      event.preventDefault();
+      if (overlay) choose('close');
+      else showPause();
+      return;
+    }
+    if (overlay) {
+      if (key === 'tab') {
+        const inputs = [...dialog.querySelectorAll('a[href], button:not([disabled]), input, summary')];
+        const index = inputs.indexOf(document.activeElement);
+        if (index < 0 || (event.shiftKey ? index === 0 : index === inputs.length - 1)) {
+          event.preventDefault();
+          inputs.at(event.shiftKey ? -1 : 0)?.focus();
+        }
+      }
+      return;
+    }
+    const orderGroup = event.target.closest?.('[data-order-group]');
+    if (orderGroup) {
+      if (key === 'arrowup' || key === 'arrowdown') {
+        event.preventDefault();
+        const options = [...orderGroup.querySelectorAll('button')];
+        options.find((option) => option !== event.target)?.focus();
+      } else if (key === 'e' && !event.repeat && event.target instanceof HTMLButtonElement) {
+        event.preventDefault();
+        event.target.click();
+      }
+      queuedDirection = null;
+      held.clear();
+      return;
+    }
+    const focusedControl = event.target.closest?.('button, a, input, select, textarea, [contenteditable]');
+    const direction = moveKeys[key];
+    if (direction && !focusedControl) {
+      event.preventDefault();
+      if (!event.repeat) queueStep(direction);
+      held.set(key, direction);
+    } else if (!event.repeat && (key === 'e' || (key === ' ' && !focusedControl))) {
+      event.preventDefault();
+      operateStation();
+    }
+  });
+
+  document.addEventListener('keyup', (event) => held.delete(event.key.toLowerCase()));
+  document.addEventListener('focusin', (event) => {
+    if (!event.target.closest?.('button, a, input, select, textarea, [contenteditable]')) return;
+    for (const key of held.keys()) {
+      if (!key.startsWith('pointer:')) held.delete(key);
+    }
+  });
+  document.addEventListener('visibilitychange', () => {
+    previousFrame = undefined;
+    if (document.hidden) clearMovement();
+  });
+  window.addEventListener('blur', () => {
+    held.clear();
+    queuedDirection = null;
+    previousFrame = undefined;
+  });
+  for (const control of document.querySelectorAll('[data-move]')) {
+    const direction = control.dataset.move;
+    const pointerKey = (event) => `pointer:${event.pointerId}`;
+    control.addEventListener('pointerdown', (event) => {
+      if (overlay || event.button !== 0) return;
+      event.preventDefault();
+      control.setPointerCapture(event.pointerId);
+      if (actions.contains(document.activeElement)) document.activeElement.blur();
+      queueStep(direction);
+      held.set(pointerKey(event), direction);
+    });
+    control.addEventListener('pointerup', (event) => held.delete(pointerKey(event)));
+    control.addEventListener('lostpointercapture', (event) => held.delete(pointerKey(event)));
+    control.addEventListener('pointercancel', (event) => {
+      held.delete(pointerKey(event));
+      if (queuedDirection === direction) queuedDirection = null;
+    });
+    control.addEventListener('click', (event) => {
+      if (event.detail === 0 && !overlay) queueStep(direction);
+    });
+  }
+
+  dialog.hidden = true;
+  render();
   requestAnimationFrame(frame);
 })();
